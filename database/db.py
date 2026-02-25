@@ -23,7 +23,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source TEXT NOT NULL,          -- 'x' or 'note'
+                source TEXT NOT NULL,          -- 'x', 'note', 'manual'
                 post_id TEXT NOT NULL UNIQUE,  -- プラットフォーム上のID
                 author TEXT,
                 content TEXT NOT NULL,
@@ -33,6 +33,7 @@ def init_db():
                 reply_count INTEGER DEFAULT 0,
                 retweet_count INTEGER DEFAULT 0,
                 impression_count INTEGER DEFAULT 0,
+                insights TEXT,                 -- Claude抽出のテーマ/洞察（JSON）
                 collected_at TEXT NOT NULL,
                 generated_at TEXT              -- コメント生成日時
             )
@@ -47,6 +48,20 @@ def init_db():
                 FOREIGN KEY (post_id) REFERENCES posts(id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS original_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_number INTEGER NOT NULL,  -- 1〜N
+                content TEXT NOT NULL,
+                theme TEXT,                    -- このポストが扱うテーマ
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 既存DBへのマイグレーション（insightsカラムがない場合は追加）
+        try:
+            conn.execute("ALTER TABLE posts ADD COLUMN insights TEXT")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -61,6 +76,7 @@ def save_post(
     reply_count: int = 0,
     retweet_count: int = 0,
     impression_count: int = 0,
+    insights: Optional[str] = None,
 ) -> Optional[int]:
     """投稿を保存する。既存のpost_idはスキップし、Noneを返す"""
     with get_connection() as conn:
@@ -70,19 +86,60 @@ def save_post(
                 INSERT INTO posts
                     (source, post_id, author, content, url,
                      like_count, quote_count, reply_count, retweet_count,
-                     impression_count, collected_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     impression_count, insights, collected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source, post_id, author, content, url,
                     like_count, quote_count, reply_count, retweet_count,
-                    impression_count, datetime.now().isoformat(),
+                    impression_count, insights, datetime.now().isoformat(),
                 ),
             )
             conn.commit()
             return cursor.lastrowid
         except sqlite3.IntegrityError:
             return None
+
+
+def update_post_insights(post_db_id: int, insights: str):
+    """投稿のinsightsを更新する"""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE posts SET insights = ? WHERE id = ?", (insights, post_db_id)
+        )
+        conn.commit()
+
+
+def get_posts_for_context(limit: int = 30) -> list:
+    """オリジナルポスト生成用にcontentとinsightsを含む投稿を取得する"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, source, author, content, url, insights FROM posts ORDER BY collected_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_original_posts(posts: list[dict]):
+    """生成されたオリジナルポストを保存する。posts = [{content, theme}]"""
+    now = datetime.now().isoformat()
+    with get_connection() as conn:
+        conn.execute("DELETE FROM original_posts")
+        for i, post in enumerate(posts, start=1):
+            conn.execute(
+                "INSERT INTO original_posts (post_number, content, theme, created_at) VALUES (?, ?, ?, ?)",
+                (i, post.get("content", ""), post.get("theme", ""), now),
+            )
+        conn.commit()
+
+
+def get_original_posts() -> list[dict]:
+    """保存されたオリジナルポストを取得する"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM original_posts ORDER BY post_number"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_all_posts(source: Optional[str] = None, limit: int = 50) -> list:
