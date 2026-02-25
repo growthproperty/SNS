@@ -1,0 +1,32 @@
+# Fly.io 設定ファイル
+# デプロイ手順: https://fly.io/docs/getting-started/
+#   1. fly auth signup  (無料登録・クレジットカード必要だが課金なし)
+#   2. fly launch --no-deploy  (初回セットアップ)
+#   3. fly volumes create sns_data --region nrt --size 1  (DBの永続ストレージ作成)
+#   4. fly secrets set ANTHROPIC_API_KEY=sk-ant-... LINE_CHANNEL_SECRET=... LINE_CHANNEL_ACCESS_TOKEN=...
+#   5. fly deploy
+
+app = "sns-bot"         # ← 自分の名前に変更（例: sns-bot-tanaka）
+primary_region = "nrt"  # 東京リージョン
+
+[build]
+
+[env]
+  PORT = "8080"
+  DATA_DIR = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # アクセスがないとき自動停止（コスト0）
+  auto_start_machines = true    # アクセス時に自動起動
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# SQLiteの永続ストレージ（fly volumes create sns_data で作成）
+[[mounts]]
+  source = "sns_data"
+  destination = "/data"

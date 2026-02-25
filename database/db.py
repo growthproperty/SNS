@@ -8,7 +8,9 @@ import os
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sns_data.db")
+# DATA_DIR が設定されていればそこに保存（Fly.io等の永続ボリューム対応）
+_data_dir = os.environ.get("DATA_DIR", os.path.dirname(os.path.dirname(__file__)))
+DB_PATH = os.path.join(_data_dir, "sns_data.db")
 
 
 def get_connection() -> sqlite3.Connection:
