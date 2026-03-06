@@ -59,6 +59,30 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        # 確定申告用：収入テーブル
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tax_income (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                amount INTEGER NOT NULL,          -- 金額（円）
+                category TEXT NOT NULL,           -- 収入カテゴリ
+                note TEXT,                        -- 摘要
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 確定申告用：経費テーブル
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tax_expense (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                amount INTEGER NOT NULL,          -- 金額（円）
+                category TEXT NOT NULL,           -- 経費カテゴリ
+                note TEXT,                        -- 摘要
+                created_at TEXT NOT NULL
+            )
+        """)
         # 既存DBへのマイグレーション（insightsカラムがない場合は追加）
         try:
             conn.execute("ALTER TABLE posts ADD COLUMN insights TEXT")
@@ -188,6 +212,86 @@ def save_comments(post_db_id: int, comments: list[str]):
             "UPDATE posts SET generated_at = ? WHERE id = ?", (now, post_db_id)
         )
         conn.commit()
+
+
+# ── 確定申告 ────────────────────────────────────────────────────────
+
+
+def add_tax_income(year: int, month: int, amount: int, category: str, note: str = "") -> int:
+    """収入を登録する"""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO tax_income (year, month, amount, category, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (year, month, amount, category, note, datetime.now().isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def add_tax_expense(year: int, month: int, amount: int, category: str, note: str = "") -> int:
+    """経費を登録する"""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO tax_expense (year, month, amount, category, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (year, month, amount, category, note, datetime.now().isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def delete_tax_entry(entry_type: str, entry_id: int) -> bool:
+    """収入または経費のエントリを削除する"""
+    table = "tax_income" if entry_type == "income" else "tax_expense"
+    with get_connection() as conn:
+        cursor = conn.execute(f"DELETE FROM {table} WHERE id = ?", (entry_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_tax_income(year: int) -> list[dict]:
+    """指定年の収入一覧を取得する"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tax_income WHERE year = ? ORDER BY month, id",
+            (year,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_tax_expense(year: int) -> list[dict]:
+    """指定年の経費一覧を取得する"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tax_expense WHERE year = ? ORDER BY month, id",
+            (year,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_tax_summary(year: int) -> dict:
+    """指定年の収入・経費合計をカテゴリ別に返す"""
+    with get_connection() as conn:
+        income_rows = conn.execute(
+            "SELECT category, SUM(amount) as total FROM tax_income WHERE year = ? GROUP BY category ORDER BY total DESC",
+            (year,),
+        ).fetchall()
+        expense_rows = conn.execute(
+            "SELECT category, SUM(amount) as total FROM tax_expense WHERE year = ? GROUP BY category ORDER BY total DESC",
+            (year,),
+        ).fetchall()
+        total_income = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM tax_income WHERE year = ?", (year,)
+        ).fetchone()[0]
+        total_expense = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM tax_expense WHERE year = ?", (year,)
+        ).fetchone()[0]
+    return {
+        "year": year,
+        "total_income": total_income,
+        "total_expense": total_expense,
+        "income_by_category": [dict(r) for r in income_rows],
+        "expense_by_category": [dict(r) for r in expense_rows],
+    }
 
 
 def get_comments_for_post(post_db_id: int) -> list[dict]:

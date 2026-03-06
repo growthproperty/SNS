@@ -12,6 +12,13 @@
   python main.py generate <ID>     -- 指定投稿の引用コメント5案を再生成
   python main.py original          -- 蓄積コンテキストからオリジナルポストを生成
   python main.py original --show   -- 前回生成したオリジナルポストを再表示
+
+  --- 確定申告サポート ---
+  python main.py tax add-income    -- 収入を登録
+  python main.py tax add-expense   -- 経費を登録
+  python main.py tax list          -- 収入・経費の一覧表示
+  python main.py tax delete        -- エントリを削除
+  python main.py tax summary       -- 年間集計と税額試算
 """
 
 import sys
@@ -32,6 +39,12 @@ from database.db import (
     get_original_posts,
     update_post_insights,
     save_post,
+    add_tax_income,
+    add_tax_expense,
+    delete_tax_entry,
+    get_tax_income,
+    get_tax_expense,
+    get_tax_summary,
 )
 
 console = Console()
@@ -430,6 +443,204 @@ def _display_original_posts(posts: list):
                 title=f"[bold green]{label}{subtitle}[/bold green]",
                 border_style="green",
             )
+        )
+
+
+# ── tax ──────────────────────────────────────────────────────────────
+
+@cli.group()
+def tax():
+    """確定申告サポート：収入・経費の管理と税額試算"""
+
+
+@tax.command("add-income")
+@click.option("--year",     type=int,   required=True, help="年（例: 2025）")
+@click.option("--month",    type=int,   required=True, help="月（1〜12）")
+@click.option("--amount",   type=int,   required=True, help="金額（円）")
+@click.option(
+    "--category",
+    default="その他収入",
+    show_default=True,
+    help="収入カテゴリ",
+)
+@click.option("--note",     default="", help="摘要（任意）")
+def tax_add_income(year: int, month: int, amount: int, category: str, note: str):
+    """収入を登録する"""
+    from tax.calculator import INCOME_CATEGORIES
+    if category not in INCOME_CATEGORIES:
+        console.print(f"[yellow]カテゴリ一覧: {', '.join(INCOME_CATEGORIES)}[/yellow]")
+    entry_id = add_tax_income(year, month, amount, category, note)
+    console.print(
+        f"[green]収入を登録しました（ID:{entry_id}）[/green] "
+        f"[dim]{year}/{month:02d}  {amount:,}円  [{category}]  {note}[/dim]"
+    )
+
+
+@tax.command("add-expense")
+@click.option("--year",     type=int,   required=True, help="年（例: 2025）")
+@click.option("--month",    type=int,   required=True, help="月（1〜12）")
+@click.option("--amount",   type=int,   required=True, help="金額（円）")
+@click.option(
+    "--category",
+    default="その他経費",
+    show_default=True,
+    help="経費カテゴリ",
+)
+@click.option("--note",     default="", help="摘要（任意）")
+def tax_add_expense(year: int, month: int, amount: int, category: str, note: str):
+    """経費を登録する"""
+    from tax.calculator import EXPENSE_CATEGORIES
+    if category not in EXPENSE_CATEGORIES:
+        console.print(f"[yellow]カテゴリ一覧: {', '.join(EXPENSE_CATEGORIES)}[/yellow]")
+    entry_id = add_tax_expense(year, month, amount, category, note)
+    console.print(
+        f"[green]経費を登録しました（ID:{entry_id}）[/green] "
+        f"[dim]{year}/{month:02d}  {amount:,}円  [{category}]  {note}[/dim]"
+    )
+
+
+@tax.command("list")
+@click.option("--year", type=int, default=None, help="対象年（省略時は当年）")
+@click.option(
+    "--type",
+    "entry_type",
+    type=click.Choice(["income", "expense", "all"]),
+    default="all",
+    show_default=True,
+    help="表示種別",
+)
+def tax_list(year: int, entry_type: str):
+    """収入・経費の一覧を表示する"""
+    import datetime as dt
+    if year is None:
+        year = dt.date.today().year
+
+    def _print_table(title: str, rows: list, color: str):
+        if not rows:
+            console.print(f"[dim]{title}: データなし[/dim]")
+            return
+        table = Table(title=f"{title} ({year}年)", box=box.ROUNDED, show_lines=True)
+        table.add_column("ID",       style="dim",   width=5,  justify="right")
+        table.add_column("月",       width=4,  justify="right")
+        table.add_column("金額（円）", width=12, justify="right")
+        table.add_column("カテゴリ", width=20)
+        table.add_column("摘要",     width=30)
+        for r in rows:
+            table.add_row(
+                str(r["id"]),
+                str(r["month"]),
+                f"[{color}]{r['amount']:,}[/{color}]",
+                r["category"],
+                r["note"] or "",
+            )
+        console.print(table)
+
+    if entry_type in ("income", "all"):
+        _print_table("収入", get_tax_income(year), "green")
+    if entry_type in ("expense", "all"):
+        _print_table("経費", get_tax_expense(year), "red")
+
+
+@tax.command("delete")
+@click.option(
+    "--type",
+    "entry_type",
+    type=click.Choice(["income", "expense"]),
+    required=True,
+    help="削除対象の種別",
+)
+@click.option("--id", "entry_id", type=int, required=True, help="削除するエントリのID")
+def tax_delete(entry_type: str, entry_id: int):
+    """収入または経費のエントリを削除する"""
+    if delete_tax_entry(entry_type, entry_id):
+        label = "収入" if entry_type == "income" else "経費"
+        console.print(f"[green]{label} ID:{entry_id} を削除しました。[/green]")
+    else:
+        console.print(f"[red]ID:{entry_id} が見つかりません。[/red]")
+
+
+@tax.command("summary")
+@click.option("--year", type=int, default=None, help="対象年（省略時は当年）")
+@click.option(
+    "--no-blue",
+    is_flag=True,
+    default=False,
+    help="青色申告特別控除を使わない（白色申告）",
+)
+@click.option(
+    "--blue-simple",
+    is_flag=True,
+    default=False,
+    help="青色申告・簡易簿記（10万円控除）を使う",
+)
+def tax_summary(year: int, no_blue: bool, blue_simple: bool):
+    """年間の収入・経費を集計し、所得税・住民税を試算する"""
+    import datetime as dt
+    from tax.calculator import calculate
+
+    if year is None:
+        year = dt.date.today().year
+
+    data = get_tax_summary(year)
+
+    use_blue = not no_blue
+    blue_full = not blue_simple
+
+    result = calculate(
+        year=year,
+        total_income=data["total_income"],
+        total_expense=data["total_expense"],
+        use_blue_return=use_blue,
+        blue_return_full=blue_full,
+    )
+
+    # ── 収入内訳 ──
+    if data["income_by_category"]:
+        t = Table(title=f"収入内訳 ({year}年)", box=box.SIMPLE, show_header=True)
+        t.add_column("カテゴリ", width=24)
+        t.add_column("合計（円）", justify="right", width=14)
+        for row in data["income_by_category"]:
+            t.add_row(row["category"], f"{row['total']:,}")
+        console.print(t)
+
+    # ── 経費内訳 ──
+    if data["expense_by_category"]:
+        t = Table(title=f"経費内訳 ({year}年)", box=box.SIMPLE, show_header=True)
+        t.add_column("カテゴリ", width=24)
+        t.add_column("合計（円）", justify="right", width=14)
+        for row in data["expense_by_category"]:
+            t.add_row(row["category"], f"{row['total']:,}")
+        console.print(t)
+
+    # ── 税額試算 ──
+    blue_label = "なし（白色）" if not use_blue else ("65万円（電子申告）" if blue_full else "10万円（簡易簿記）")
+    console.print(
+        Panel(
+            f"[bold]年間収入合計    [/bold]  [green]{result.total_income:>14,} 円[/green]\n"
+            f"[bold]年間経費合計    [/bold]  [red]{result.total_expense:>14,} 円[/red]\n"
+            f"[bold]事業所得        [/bold]  {result.gross_profit:>14,} 円\n"
+            f"[bold]青色申告特別控除[/bold]  [dim]{result.blue_return_deduction:>14,} 円  ({blue_label})[/dim]\n"
+            f"[bold]基礎控除        [/bold]  [dim]{result.basic_deduction:>14,} 円[/dim]\n"
+            f"─────────────────────────────────────────\n"
+            f"[bold]課税所得        [/bold]  [yellow]{result.taxable_income:>14,} 円[/yellow]\n"
+            f"─────────────────────────────────────────\n"
+            f"[bold]所得税          [/bold]  [cyan]{result.income_tax:>14,} 円[/cyan]\n"
+            f"[bold]復興特別所得税  [/bold]  [cyan]{result.reconstruction_tax:>14,} 円[/cyan]\n"
+            f"[bold]住民税（所得割）[/bold]  [cyan]{result.resident_tax:>14,} 円[/cyan]\n"
+            f"─────────────────────────────────────────\n"
+            f"[bold]合計税額（概算）[/bold]  [bold red]{result.total_tax:>14,} 円[/bold red]\n"
+            f"[bold]実効税率        [/bold]  [bold]{result.effective_rate:>13.1f} %[/bold]\n"
+            f"\n[dim]※ 住民税は均等割（5,000円程度）を含まない概算です。"
+            f"社会保険料控除・医療費控除等は別途考慮してください。[/dim]",
+            title=f"[bold yellow]{year}年 確定申告 税額試算[/bold yellow]",
+            border_style="yellow",
+        )
+    )
+
+    if data["total_income"] == 0:
+        console.print(
+            "[dim]収入データがありません。"
+            "`python main.py tax add-income` で収入を登録してください。[/dim]"
         )
 
 
